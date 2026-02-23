@@ -8,11 +8,18 @@ React + Node.js + PostgreSQL
 
 In **pgAdmin**: connect to your PostgreSQL server, open Query Tool, run in order:
 
-1. `backend/db/schema.sql` — creates tables
-2. `backend/db/attachments.sql` — creates assignment_attachments table
-3. `backend/db/announcements.sql` — creates announcements table
-4. `backend/db/seed.sql` — inserts 3 classes, 9 students, sample assignments
-5. `npm run seed-auth` (from backend) — creates login users
+1. `backend/db/schema.sql` — core tables (users, students, teachers, courses, classes, assignments, grades, etc.)
+2. `backend/db/due-at.sql` — due_at for assignments
+3. `backend/db/grading-model.sql` — assignment categories (homework, quiz, test, etc.)
+4. `backend/db/grade-feedback.sql` — feedback field for grades
+5. `backend/db/attendance.sql` — attendance tables
+6. `backend/db/submissions.sql` — assignment submissions
+7. `backend/db/calendar-events.sql` — calendar events
+8. `backend/db/inactive-students.sql` — inactive students (optional)
+9. `backend/db/notification-seen.sql` — notification tracking (optional)
+10. `backend/db/seed.sql` — demo data (3 classes, 9 students, sample assignments)
+11. `backend/db/seed-extended.sql` — extra demo data (optional)
+12. From backend folder: `npm run seed-auth` — creates login users
 
 ### 2. Backend
 
