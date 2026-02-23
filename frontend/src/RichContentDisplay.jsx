@@ -117,7 +117,7 @@ export function RichContentDisplay({ html }) {
       try {
         return (
           <div key={Math.random()} className="chart-container">
-            <ChartBlock data={attrs["data-chart"]} />
+            <ChartBlock data={domNode.attribs["data-chart"]} />
           </div>
         );
       } catch (e) {

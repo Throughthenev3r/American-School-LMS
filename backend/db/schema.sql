@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS assignments (
   title VARCHAR(200) NOT NULL,
   description TEXT,
   due_date DATE,
+  due_at TIMESTAMPTZ,
   max_points INTEGER DEFAULT 100
 );
 
