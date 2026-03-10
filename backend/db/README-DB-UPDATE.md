@@ -9,6 +9,7 @@
 7. attachments.sql, announcements.sql
 8. submissions.sql
 9. calendar-events.sql
-10. seed.sql
-11. seed-extended.sql (optional)
-12. From backend: `node db/seed-auth.js`
+10. document-chunks.sql (for AI/RAG search)
+11. seed.sql
+12. seed-extended.sql (optional)
+13. From backend: `node db/seed-auth.js`

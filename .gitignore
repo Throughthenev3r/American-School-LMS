@@ -1,6 +1,10 @@
 # Dependencies
 node_modules/
 
+# Database dumps
+*.dump
+backup.dump
+
 # Environment and secrets
 .env
 .env.local
@@ -25,5 +29,6 @@ Thumbs.db
 # IDE
 .idea/
 .vscode/
+.cursor/
 *.swp
 *.swo

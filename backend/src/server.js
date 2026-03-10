@@ -8,6 +8,8 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import { runPdfIndexingPipeline } from './services/aiPipeline.js';
+import { askAssistant } from './services/aiAssistantService.js';
 
 dotenv.config();
 
@@ -1236,6 +1238,75 @@ app.post('/api/announcements', authMiddleware, requireRole('admin', 'teacher'), 
   }
 });
 
+// --- AI Assistant (students only) ---
+app.post('/api/ai/ask', authMiddleware, requireRole('student'), async (req, res) => {
+  try {
+    const { question } = req.body || {};
+    const q = String(question || '').trim();
+    if (!q) return res.status(400).json({ error: 'question required' });
+    const studentId = req.user.studentId;
+    if (!studentId) return res.status(403).json({ error: 'Student account required' });
+
+    const openaiApiKey = process.env.AI_API_KEY || process.env.OPENAI_API_KEY || null;
+    const anthropicApiKey = openaiApiKey ? null : (process.env.ANTHROPIC_API_KEY || null);
+    if (!openaiApiKey && !anthropicApiKey) {
+      return res.status(503).json({ error: 'AI assistant not configured (OPENAI_API_KEY or ANTHROPIC_API_KEY)' });
+    }
+
+    const baseURL = process.env.AI_API_BASE_URL || null;
+    const model = process.env.AI_MODEL || null;
+    const anthropicModel = process.env.ANTHROPIC_MODEL || null;
+    const { answer, intent } = await askAssistant(pool, {
+      question: q,
+      studentId,
+      apiKey: openaiApiKey,
+      baseURL,
+      model,
+      anthropicApiKey,
+      anthropicModel,
+    });
+    res.json({ answer, intent });
+  } catch (e) {
+    console.error('[AI Assistant]', e);
+    res.status(500).json({ error: e.message || 'AI request failed' });
+  }
+});
+
+// Teacher/Admin: view AI ask analytics
+app.get('/api/ai/ask-log', authMiddleware, requireRole('admin', 'teacher'), async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit, 10) || 50, 200);
+    let rows;
+    if (req.user.role === 'admin') {
+      const r = await pool.query(
+        `SELECT l.id, l.student_id, s.first_name, s.last_name, l.question, l.answer_summary, l.topics, l.intent, l.created_at
+         FROM ai_ask_log l
+         JOIN students s ON s.id = l.student_id
+         ORDER BY l.created_at DESC
+         LIMIT $1`,
+        [limit]
+      );
+      rows = r.rows;
+    } else {
+      const r = await pool.query(
+        `SELECT l.id, l.student_id, s.first_name, s.last_name, l.question, l.answer_summary, l.topics, l.intent, l.created_at
+         FROM ai_ask_log l
+         JOIN students s ON s.id = l.student_id
+         JOIN enrollments e ON e.student_id = l.student_id
+         JOIN class_sections cs ON cs.id = e.class_section_id AND cs.teacher_id = $2
+         ORDER BY l.created_at DESC
+         LIMIT $1`,
+        [limit, req.user.teacherId]
+      );
+      rows = r.rows;
+    }
+    res.json(rows);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.delete('/api/announcements/:id', authMiddleware, requireRole('admin', 'teacher'), async (req, res) => {
   try {
     const { id } = req.params;
@@ -1906,6 +1977,8 @@ app.post('/api/assignments/:id/attachments', authMiddleware, requireRole('admin'
       'INSERT INTO assignment_attachments (assignment_id, original_filename, stored_filename, mime_type, size_bytes) VALUES ($1, $2, $3, $4, $5) RETURNING id, original_filename, mime_type, size_bytes',
       [id, req.file.originalname, req.file.filename, req.file.mimetype || null, req.file.size || 0]
     );
+    runPdfIndexingPipeline(pool, UPLOAD_DIR, req.file, 'assignment_attachment', rows[0].id)
+      .catch((e) => console.error('[AI Pipeline]', e));
     res.status(201).json(rows[0]);
   } catch (e) {
     console.error(e);
@@ -2143,10 +2216,95 @@ async function ensureCalendarTables() {
   }
 }
 
+async function ensureDocumentChunksTable() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS document_chunks (
+        id SERIAL PRIMARY KEY,
+        source_type VARCHAR(50) NOT NULL,
+        source_id INTEGER NOT NULL,
+        chunk_index INTEGER NOT NULL,
+        content TEXT NOT NULL,
+        char_count INTEGER NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_document_chunks_source ON document_chunks(source_type, source_id)
+    `);
+    try {
+      await pool.query('CREATE EXTENSION IF NOT EXISTS vector');
+      await pool.query('ALTER TABLE document_chunks ADD COLUMN IF NOT EXISTS embedding vector(1536)');
+    } catch (ve) {
+      if (!ve.message?.includes('vector')) console.warn('[DB] pgvector not available, semantic search disabled:', ve.message);
+    }
+  } catch (e) {
+    console.error('Document chunks table init failed:', e.message);
+  }
+}
+
+async function ensureAiAskLogTable() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS ai_ask_log (
+        id SERIAL PRIMARY KEY,
+        student_id INTEGER NOT NULL REFERENCES students(id),
+        question TEXT NOT NULL,
+        answer_summary TEXT,
+        chunk_ids INTEGER[],
+        topics TEXT[],
+        intent VARCHAR(32) DEFAULT 'question_about_material',
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await pool.query(`ALTER TABLE ai_ask_log ADD COLUMN IF NOT EXISTS intent VARCHAR(32) DEFAULT 'question_about_material'`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_ai_ask_log_student ON ai_ask_log(student_id)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_ai_ask_log_created ON ai_ask_log(created_at)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_ai_ask_log_intent ON ai_ask_log(intent)`);
+  } catch (e) {
+    console.error('AI ask log table init failed:', e.message);
+  }
+}
+
+function startServer(port) {
+  return new Promise((resolve, reject) => {
+    const server = app.listen(port, () => {
+      console.log(`API running on http://localhost:${port}`);
+      resolve(server);
+    });
+    server.on('error', (err) => {
+      if (err.code === 'EADDRINUSE') {
+        console.error(`Port ${port} is already in use. Kill the process: taskkill /IM node.exe /F`);
+        console.error('Or run with another port: PORT=4001 npm run dev');
+      }
+      reject(err);
+    });
+  });
+}
+
+function gracefulShutdown(server) {
+  const shutdown = () => {
+    if (!server) return;
+    server.close(() => {
+      pool.end().catch(() => {}).finally(() => process.exit(0));
+    });
+  };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+}
+
 if (isMain) {
   (async () => {
-    await ensureCalendarTables();
-    app.listen(PORT, () => console.log(`API running on http://localhost:${PORT}`));
+    try {
+      await ensureCalendarTables();
+      await ensureDocumentChunksTable();
+      await ensureAiAskLogTable();
+      const server = await startServer(PORT);
+      gracefulShutdown(server);
+    } catch (e) {
+      console.error('Failed to start:', e.message);
+      process.exit(1);
+    }
   })();
 }
 export { app, pool };

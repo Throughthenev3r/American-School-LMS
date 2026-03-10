@@ -7,6 +7,7 @@ import { AssignmentSubmission } from "./AssignmentSubmission.jsx";
 import { ClassSyllabus } from "./ClassSyllabus.jsx";
 import { StudentDashboard } from "./StudentDashboard.jsx";
 import { AddCalendarEventForm } from "./AddCalendarEventForm.jsx";
+import { ChatAssistant } from "./ChatAssistant.jsx";
 import { apiFetch, API, parseJson } from "./api.js";
 import {
   formatDate,
@@ -239,11 +240,16 @@ function App() {
   }, [selectedClassId]);
 
   useEffect(() => {
+    const token = localStorage.getItem("token");
     const saved = localStorage.getItem("user");
-    if (saved) {
+    if (token && saved) {
       try {
         setUser(JSON.parse(saved));
-      } catch (_) {}
+      } catch (_) {
+        localStorage.removeItem("user");
+      }
+    } else if (!token && saved) {
+      localStorage.removeItem("user");
     }
   }, []);
 
@@ -335,7 +341,7 @@ function App() {
         .catch((e) => setError(e.message))
         .finally(() => setLoading(false));
     }
-    if (view === "dashboard" || view === "calendar" || view === "assignments") {
+    if ((view === "dashboard" || view === "calendar" || view === "assignments") && user) {
       apiFetch(`${API}/me/assignments`)
         .then((r) => (r.ok ? r.json() : []))
         .then((data) => setAllAssignments(dedupeById(Array.isArray(data) ? data : [])))
@@ -2341,6 +2347,7 @@ function App() {
         <div className="content-area">{renderContent()}</div>
       </main>
       {toast && <div className="toast">{toast}</div>}
+      {user?.role === "student" && <ChatAssistant />}
       {showChangePassword && (
         <ChangePasswordForm
           onDone={() => {
